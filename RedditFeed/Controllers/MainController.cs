@@ -1,22 +1,30 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Globalization;
-using System.IO;
-using System.Linq;
-using System.Net;
-using System.Net.Http;
-using System.ServiceModel.Syndication;
-using System.Text;
-using System.Text.RegularExpressions;
-using System.Threading.Tasks;
-using System.Web.Http;
-using System.Xml;
-using System.Xml.Linq;
-
-namespace RedditFeed.Controllers
+﻿namespace RedditFeed.Controllers
 {
+    using System;
+    using System.Collections.Generic;
+    using System.IO;
+    using System.Linq;
+    using System.Net;
+    using System.Net.Http;
+    using System.ServiceModel.Syndication;
+    using System.Text;
+    using System.Text.RegularExpressions;
+    using System.Threading.Tasks;
+    using System.Web.Http;
+    using System.Xml;
+    using System.Xml.Linq;
+    using RedditFeed.Client;
+    using RedditFeed.Reddit;
+
     public class MainController : ApiController
     {
+        private readonly IRedditAdapter _redditAdapter;
+
+        public MainController(IRedditAdapter redditAdapter)
+        {
+            this._redditAdapter = redditAdapter;
+        }
+
         public async Task<HttpResponseMessage> Get(string subreddit, string sort, string time)
         {
             HttpResponseMessage response;
@@ -35,23 +43,21 @@ namespace RedditFeed.Controllers
 
         private async Task<SyndicationFeed> CreateFeed(string subreddit, string sort, string time)
         {
-            string url = string.Format("http://www.reddit.com/r/{0}/{1}/.rss{2}", subreddit, sort,
-                string.IsNullOrEmpty(time) ? string.Empty : string.Format("?sort={0}&t={1}", sort, time));
-
-            string content;
-            using (HttpClient httpClient = new HttpClient())
+            SortOrder sortOrder;
+            if (!SortOrder.TryParse(sort, time, out sortOrder))
             {
-                content = await httpClient.GetStringAsync(url);
+                throw new ArgumentException(string.Format("Invalid sort order: {0}", string.Join(" ", new[] { sort, time })));
             }
 
-            XDocument xml = XDocument.Parse(content);
+            const int maxEntries = 30; // TDOO: make configurable
+            List<Listing> listings = await this._redditAdapter.GetListings(subreddit, sortOrder, maxEntries);
 
             string title = string.Join(" ", "reddit", subreddit, sort, time);
 
             SyndicationFeed feed = new SyndicationFeed(title, title, Request.RequestUri)
             {
                 LastUpdatedTime = DateTimeOffset.UtcNow,
-                Items = xml.Descendants("item")
+                Items = listings
                     .Where(this.Validate)
                     .Select(this.CreateSyndicationItem)
                     .Where(this.PostValidate)
@@ -62,7 +68,7 @@ namespace RedditFeed.Controllers
             return feed;
         }
 
-        private bool Validate(XElement item)
+        private bool Validate(Listing listing)
         {
             const int minWidth = 1024;
             const int minHeight = 768;
@@ -70,7 +76,7 @@ namespace RedditFeed.Controllers
             const float minAspectRatio = 1.0f;
             const float maxAspectRatio = 2.0f;
 
-            Match match = Regex.Match(item.Element("title").Value, @"[\[(]\s*(?<width>\d+)\s*x\s*(?<height>\d+)\s*[\])]");
+            Match match = Regex.Match(listing.Title, @"[\[(]\s*(?<width>\d+)\s*x\s*(?<height>\d+)\s*[\])]");
             bool valid;
             if (match.Success)
             {
@@ -92,24 +98,13 @@ namespace RedditFeed.Controllers
             return valid;
         }
 
-        private SyndicationItem CreateSyndicationItem(XElement element)
+        private SyndicationItem CreateSyndicationItem(Listing listing)
         {
-            string description = element.Element("copyrightsource") != null ?
-                element.Element("copyrightsource").Value :
-                null;
-
-            string title = element.Element("title").Value;
-            Uri link = new Uri(element.Element("link").Value);
-            Uri enclosure = XDocument.Parse(element.Element("description").Value).Descendants("a")
-                .Where(x => x.Value == "[link]")
-                .Select(x => new Uri(x.Attribute("href").Value))
-                .First();
-
-            SyndicationItem item = new SyndicationItem(title, title, link)
+            SyndicationItem item = new SyndicationItem(listing.Title, listing.Title, listing.Url)
             {
-                PublishDate = DateTimeOffset.Parse(element.Element("pubDate").Value)
+                PublishDate = listing.CreatedTime
             };
-            item.ElementExtensions.Add(new XElement("enclosure", new XAttribute("url", enclosure), new XAttribute("type", "image/jpeg")));
+            item.ElementExtensions.Add(new XElement("enclosure", new XAttribute("url", listing.Url), new XAttribute("type", "image/jpeg")));
 
             return item;
         }
