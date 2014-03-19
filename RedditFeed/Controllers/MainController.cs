@@ -2,6 +2,7 @@
 {
     using System;
     using System.Collections.Generic;
+    using System.Diagnostics;
     using System.IO;
     using System.Linq;
     using System.Net;
@@ -76,23 +77,38 @@
             const float minAspectRatio = 1.0f;
             const float maxAspectRatio = 2.0f;
 
-            Match match = Regex.Match(listing.Title, @"[\[(]\s*(?<width>\d+)\s*x\s*(?<height>\d+)\s*[\])]");
+            Match match = Regex.Match(listing.Title, @"[\[(]\s*(?<width>\d+)\s*[x,×]\s*(?<height>\d+)\s*[\])]");
             bool valid;
-            if (match.Success)
+            if (!match.Success)
             {
-                int width = int.Parse(match.Groups["width"].Value);
-                int height = int.Parse(match.Groups["height"].Value);
-                float aspectRatio = ((float)width) / height;
-
-                valid =
-                    width >= minWidth &&
-                    height >= minHeight &&
-                    minAspectRatio <= aspectRatio && 
-                    aspectRatio <= maxAspectRatio;
+                Trace.WriteLine(string.Format("Filtered due to bad regex: {0}", listing.Title));
+                valid = false;
             }
             else
             {
-                valid = false;
+                int width = int.Parse(match.Groups["width"].Value);
+                int height = int.Parse(match.Groups["height"].Value);
+                float aspectRatio = ((float)width)/height;
+
+                if (width < minWidth)
+                {
+                    Trace.WriteLine(string.Format("Filtered due to min width: {0}", width));
+                    valid = false;
+                }
+                else if (height < minHeight)
+                {
+                    Trace.WriteLine(string.Format("Filtered due to min height: {0}", height));
+                    valid = false;
+                }
+                else if (maxAspectRatio < aspectRatio || aspectRatio < minAspectRatio)
+                {
+                    Trace.WriteLine(string.Format("Filtered due to aspectRatio: {0}", aspectRatio));
+                    valid = false;
+                }
+                else
+                {
+                    valid = true;
+                }
             }
 
             return valid;
@@ -117,7 +133,13 @@
                 .Select(x => x.Attribute("url").Value)
                 .First();
 
-            return Regex.IsMatch(url, @"\.((jpg)|(jpeg)|(png))$");
+            bool valid = Regex.IsMatch(url, @"\.((jpg)|(jpeg)|(png))$");
+            if (!valid)
+            {
+                Trace.WriteLine(string.Format("Filtered due to file name: {0}", url));
+            }
+
+            return valid;
         }
 
         private HttpResponseMessage CreateResponse(SyndicationFeed feed)
